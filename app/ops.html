@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QuickDrop · Payout Dispute Desk (ops)</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1b1f24; --mute:#69707a; --line:#e2e5ea; --acc:#1f6feb; --ok:#1a7f37; --bad:#cf222e; --warn:#9a6700; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1318; --card:#171c23; --ink:#e6e9ee; --mute:#8b93a0; --line:#2a313b; --acc:#58a6ff; --ok:#3fb950; --bad:#f85149; --warn:#d29922; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); background:var(--card); display:flex; justify-content:space-between; align-items:center; }
+  h1 { font-size:16px; margin:0; } h2 { font-size:13px; margin:0 0 8px; text-transform:uppercase; letter-spacing:.05em; color:var(--mute); }
+  main { display:grid; grid-template-columns: minmax(320px, 1fr) minmax(320px, 1.2fr); gap:16px; padding:16px; max-width:1300px; margin:0 auto; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 14px; margin-bottom:16px; }
+  .item { border-top:1px solid var(--line); padding:10px 0; } .item:first-of-type { border-top:0; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .tag { font-size:11px; padding:1px 7px; border-radius:10px; border:1px solid var(--line); color:var(--mute); }
+  .tag.approval { color:var(--warn); border-color:var(--warn); } .tag.escalation { color:var(--bad); border-color:var(--bad); }
+  button { font:inherit; border:1px solid var(--line); background:var(--card); color:var(--ink); border-radius:6px; padding:3px 10px; cursor:pointer; }
+  button.ok { color:var(--ok); border-color:var(--ok); } button.no { color:var(--bad); border-color:var(--bad); }
+  a.rider { color:var(--acc); cursor:pointer; text-decoration:none; font-weight:600; }
+  .mute { color:var(--mute); } .msg { padding:6px 10px; border-radius:8px; margin:4px 0; max-width:92%; white-space:pre-wrap; }
+  .in { background:var(--bg); border:1px solid var(--line); } .out { background:color-mix(in srgb, var(--acc) 12%, transparent); margin-left:auto; }
+  details { margin:2px 0; } summary { cursor:pointer; } pre { margin:4px 0; padding:6px; background:var(--bg); border-radius:6px; overflow:auto; font-size:12px; }
+  .t-error { color:var(--bad); } .t-decision { color:var(--warn); } .t-tool_call { color:var(--acc); }
+</style>
+</head>
+<body>
+<header><h1>QuickDrop · Rider Payout Dispute Desk</h1><span class="mute" id="stamp"></span></header>
+<main>
+  <section>
+    <div class="card"><h2>Waiting for ops <span id="pcount"></span></h2><div id="pending"></div></div>
+    <div class="card"><h2>Riders with conversations</h2><div id="riders" class="row"></div></div>
+    <div class="card"><h2>Recently resolved</h2><div id="resolved"></div></div>
+  </section>
+  <section>
+    <div class="card"><h2>Conversation <span id="who" class="mute"></span></h2><div id="conv"><span class="mute">Pick a rider.</span></div></div>
+    <div class="card"><h2>What the agent did (trace)</h2><div id="trace"><span class="mute">Pick a rider.</span></div></div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+let current = null;
+async function j(url, opts) { const r = await fetch(url, opts); return r.json(); }
+
+function itemHtml(i, actions) {
+  const amt = i.amount != null ? ` · <b>₹${i.amount}</b>` : '';
+  const its = (i.items || []).map(x => `${esc(x.kind)} ${esc(x.trip_id || x.day)} ₹${x.owed}`).join(', ');
+  return `<div class="item"><div class="row"><span class="tag ${i.type}">${i.type}</span>
+    <a class="rider" onclick="openRider('${i.rider_id}')">${i.rider_id}</a>${amt}
+    <span class="mute">${esc(i.created_at)}</span>${i.status !== 'pending' ? `<span class="tag">${i.status}</span>` : ''}</div>
+    <div>${esc(i.reason)}</div>${its ? `<div class="mute">${its}</div>` : ''}
+    ${actions ? `<div class="row" style="margin-top:6px"><button class="ok" onclick="decide('${i.id}','approve')">${i.type === 'approval' ? 'Approve & pay' : 'Resolve'}</button>
+    <button class="no" onclick="decide('${i.id}','reject')">${i.type === 'approval' ? 'Reject' : 'Dismiss'}</button></div>` : ''}</div>`;
+}
+async function decide(id, what) {
+  const r = await fetch(`/ops/${id}/${what}`, {method: 'POST'});
+  if (!r.ok) alert((await r.json()).error || 'failed');
+  refresh();
+}
+async function openRider(id) {
+  current = id; $('who').textContent = '· ' + id;
+  const [conv, trace] = await Promise.all([j('/ops/conversation/' + id), j('/trace/' + id)]);
+  $('conv').innerHTML = conv.map(m => `<div class="msg in">${esc(m.text)}</div>` + (m.reply ? `<div class="msg out">${esc(m.reply)}</div>` : '')).join('') || '<span class="mute">No messages.</span>';
+  $('trace').innerHTML = trace.map(s => `<details><summary class="t-${s.type}">${esc(s.at.slice(11, 19))} · ${s.type} · ${esc(s.name)}</summary>
+    <pre>${esc(JSON.stringify({input: s.input, output: s.output}, null, 1))}</pre></details>`).join('');
+}
+async function refresh() {
+  const [pending, items, riders] = await Promise.all([j('/ops/pending'), j('/ops/items'), j('/ops/riders')]);
+  $('pcount').textContent = pending.length ? `(${pending.length})` : '';
+  $('pending').innerHTML = pending.map(i => itemHtml(i, true)).join('') || '<span class="mute">Nothing waiting.</span>';
+  $('resolved').innerHTML = items.filter(i => i.status !== 'pending').slice(0, 8).map(i => itemHtml(i, false)).join('') || '<span class="mute">None yet.</span>';
+  $('riders').innerHTML = riders.map(r => `<a class="rider" onclick="openRider('${r.rider_id}')">${r.rider_id} <span class="mute">(${r.messages})</span></a>`).join('') || '<span class="mute">No conversations yet.</span>';
+  $('stamp').textContent = 'updated ' + new Date().toLocaleTimeString();
+  if (current) openRider(current);
+}
+refresh(); setInterval(refresh, 5000);
+</script>
+</body>
+</html>
